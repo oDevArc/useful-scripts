@@ -3,6 +3,7 @@
 from lxml import etree
 from urllib2 import Request, urlopen, URLError, HTTPError
 import os
+import base64
 import hashlib
 import sys
 import getopt
@@ -12,12 +13,16 @@ __doc__ = """
    %(program_name)s <options> Maven-Coordinate filename
    Options:
      -m <url> --maven-server=<url>     
-     
+     -u username
+     -p password     
    Maven-Coordinate are defined by: http://maven.apache.org/pom.html#Maven_Coordinates
       The possible options are:
       - groupId:artifactId:version
       - groupId:artifactId:packaging:version
       - groupId:artifactId:packaging:classifier:version
+   If you want to have a specific extension (for example "war") you should type :
+      - groupId:artifactId:extension:packaging
+
     filename is optional. If not supplied the filename will be <artifactId>.<extension>
 
    Example:
@@ -92,10 +97,12 @@ class Artifact(object):
 
 
 class MavenDownloader:
-    def __init__(self, base="http://repo1.maven.org/maven2"):
+    def __init__(self, base="http://repo1.maven.org/maven2", username = None, password = None):
         if base.endswith("/"):
             base = base.rstrip("/")
         self.base = base
+        self.username = username
+        self.password = password
         self.user_agent = "Maven Artifact Downloader/1.0"
 
     def _find_latest_version_available(self, artifact):
@@ -108,6 +115,7 @@ class MavenDownloader:
     def find_uri_for_artifact(self, artifact):
         if artifact.is_snapshot():
             path = "/%s/maven-metadata.xml" % (artifact.path())
+            print("result for find_uri_for_artefact : " + str(self.base + path))
             xml = self._request(self.base + path, "Failed to download maven-metadata.xml", lambda r: etree.parse(r))
             basexpath = "/metadata/versioning/"
             p = xml.xpath(basexpath + "/snapshotVersions/snapshotVersion")
@@ -118,6 +126,7 @@ class MavenDownloader:
 
     def _find_matching_artifact(self, elems, artifact):
         filtered = filter(lambda e: e.xpath("extension/text() = '%s'" % artifact.extension), elems)
+        print("searching for extenstion : " + str(artifact.extension))
         if artifact.classifier:
             filtered = filter(lambda e: e.xpath("classifier/text() = '%s'" % artifact.classifier), elems)
 
@@ -144,6 +153,11 @@ class MavenDownloader:
     def _request(self, url, failmsg, f):
         headers = {"User-Agent": self.user_agent}
         req = Request(url, None, headers)
+        #print("user : " + str(self.username) + ' /  ' + str(self.password))         
+        # if necessary add authentication header 
+        if (self.username is not None and self.password is not None): 
+            base64string = base64.encodestring('%s:%s' % (self.username, self.password)).replace('\n', '')
+            req.add_header("Authorization", "Basic %s" % base64string)        
         try:
             response = urlopen(req)
         except HTTPError, e:
@@ -158,11 +172,12 @@ class MavenDownloader:
 
     def download(self, artifact, filename=None):
         filename = artifact.get_filename(filename)
+        print("searching filename : " + str(filename))
         if not artifact.version:
             artifact = Artifact(artifact.groupId, artifact.artifactId, self._find_latest_version_available(artifact),
                 artifact.classifier, artifact.extension)
-
         url = self.find_uri_for_artifact(artifact)
+        print (url)
         if not self.verify_md5(filename, url + ".md5"):
             print("Downloading artifact " + str(artifact))
             response = self._request(url, "Failed to download artifact " + str(artifact), lambda r: r)
@@ -222,8 +237,11 @@ class MavenDownloader:
 
 
 def main():
+    #print(str(sys.argv[1:]))
     try:
-        opts, args = getopt.getopt(sys.argv[1:], "m:", ["maven-server="])
+        #opts, args = getopt.getopt(sys.argv[1:], "m:", ["maven-server="])
+        opts, args = getopt.getopt(sys.argv[1:], "m:u:p:", ["maven-server="])
+        print("args : " + str(args))
     except getopt.GetoptError, err:
         # print help information and exit:
         print str(err) # will print something like "option -a not recognized"
@@ -241,9 +259,16 @@ def main():
             base = options.get("--maven-server")
         if not base:
             base = "http://repo1.maven.org/maven2"
-        downloader = MavenDownloader(base)
-
+        
+        username = options.get("-u")
+        if not username:
+            username = None
+        password = options.get("-p")
+        if not password:
+            password = None
         artifact = Artifact.parse(args[0])
+        
+        downloader = MavenDownloader(base, username, password)
 
         filename = None
         if len(args) == 2:
